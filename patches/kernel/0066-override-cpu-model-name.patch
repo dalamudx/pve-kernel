@@ -1,0 +1,27 @@
+From: Antigravity <antigravity@example.com>
+Date: Mon, 2 Feb 2026 12:00:00 +0000
+Subject: [PATCH] Override QS/ES model name for 8260L
+
+---
+ arch/x86/kernel/cpu/common.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/arch/x86/kernel/cpu/common.c b/arch/x86/kernel/cpu/common.c
+index 8e46101..1234567 100644
+--- a/arch/x86/kernel/cpu/common.c
++++ b/arch/x86/kernel/cpu/common.c
+@@ -806,6 +806,12 @@ static void get_model_name(struct cpuinfo_x86 *c)
+ 	}
+ 
+ 	*(s + 1) = '\0';
++
++	/* Override QS/ES model name */
++	if (strstr(c->x86_model_id, "Genuine Intel(R) CPU 0000")) {
++		snprintf(c->x86_model_id, sizeof(c->x86_model_id),
++			 "Intel(R) Xeon(R) Platinum 8260L CPU @ 2.40GHz");
++	}
+ }
+ 
+ void cpu_detect_cache_sizes(struct cpuinfo_x86 *c)
+-- 
+2.39.2

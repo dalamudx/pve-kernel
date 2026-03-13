@@ -1,0 +1,92 @@
+name: Build PVE Kernel
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  UPSTREAM_URL: "https://git.proxmox.com/git/pve-kernel.git"
+
+jobs:
+  sync-and-build:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:trixie
+    steps:
+      - name: Install nodejs and git
+        run: |
+          apt-get update
+          apt-get install -y nodejs git
+      
+      - name: Checkout Local Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Sync Upstream
+        run: |
+          git config --global --add safe.directory '*'
+          git config --global user.email "${{ vars.ACTION_EMAIL }}"
+          git config --global user.name "${{ vars.ACTION_USER }}"
+          git config --global submodule.fetchJobs 4
+          git remote add upstream ${{ env.UPSTREAM_URL }}
+          OLD_VERSION=$(ls abi-prev*|grep -oP '(?<=abi-prev-).*(?=-pve)')
+          git checkout main
+          git fetch upstream
+          git rebase upstream/master
+          NEW_VERSION=$(ls abi-prev*|grep -oP '(?<=abi-prev-).*(?=-pve)')
+          COMMIT=$(git log |grep -B 4 -i "$NEW_VERSION"|head -n 1|awk '{print $2}')
+          if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
+            echo "No new version found, skipping build"
+            echo "SKIP=true" >> $GITHUB_ENV
+          else
+            mkdir -p /tmp/custom-patches
+            git diff --name-only --diff-filter=A $COMMIT HEAD -- patches/kernel/ | \
+              xargs -I{} cp {} /tmp/custom-patches/ 2>/dev/null || true
+            git checkout $COMMIT
+            cp /tmp/custom-patches/* patches/kernel/ 2>/dev/null || true
+            sed -i 's|\.\.|${{ vars.SUBMODULE_URL }}|g' .gitmodules
+            git submodule update --init --recursive --depth 1
+            echo "SKIP=false" >> $GITHUB_ENV
+            echo "KERNEL_VERSION=$(echo $NEW_VERSION|cut -d'-' -f1)" >> $GITHUB_ENV
+            echo "KERNEL_REVISION=$(echo $NEW_VERSION|cut -d'-' -f2)" >> $GITHUB_ENV
+          fi
+      
+      - name: Install Base Build Dependencies
+        run: |
+          apt-get install -y build-essential devscripts equivs debhelper python-is-python3 dh-python sphinx-common \
+          asciidoc-base asciidoc-common bc bison cpio docbook-xml docbook-xsl dwarves flex kmod libbpf1 libdw-dev libelf-dev \
+          libiberty-dev libnuma-dev libnuma1 libpopt0 libslang2 lz4 pahole rsync sgml-data xmlto xsltproc gawk libexpat1-dev \
+          libpng-dev libpython3-dev libpython3.13 libpython3.13-dev libslang2-dev libssl-dev python3-dev python3.13-dev zstd
+      
+      - name: Build PVE Kernel
+        if: env.SKIP == 'false'
+        run: |
+          make build-dir-fresh
+          mk-build-deps -ir proxmox-kernel-${KERNEL_VERSION}/debian/control
+          make deb
+
+      - name: Push Back to Origin
+        if: env.SKIP == 'false'
+        run: |
+          git reset --soft HEAD@{1}
+          git push origin main -f
+
+      - name: Release to Gitea
+        uses: softprops/action-gh-release@v2
+        if: env.SKIP == 'false'
+        with:
+          tag_name: ${{ env.KERNEL_VERSION }}-${{ env.KERNEL_REVISION }}
+          name: "PVE Kernel Release ${{ env.KERNEL_VERSION }}-${{ env.KERNEL_REVISION }}"
+          body: |
+            Automated build of PVE Kernel from upstream.
+            Base Version: `${{ env.KERNEL_VERSION }}-${{ env.KERNEL_REVISION }}`
+            Build Number: `${{ github.run_number }}`
+          draft: false
+          prerelease: false
+          files: |
+            proxmox-*.deb
+            proxmox-*.changes
